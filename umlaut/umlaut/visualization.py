@@ -2,6 +2,8 @@ import logging
 from math import floor
 import pickle
 import sys
+import ast
+import statistics
 
 import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
@@ -11,6 +13,7 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import seaborn as sns
+import json
 
 class Visualizer:
     def __init__(self, df_from_cli, plotting_backend):
@@ -22,6 +25,8 @@ class Visualizer:
             return self.plot_with_matplotlib()
         if self.plotting_backend == 'plotly':
             return self.plot_with_plotly()
+        if self.plotting_backend == 'text':
+            return self.plot_with_text()
 
 class HyperparemeterVisualizer(Visualizer):
     def plot_with_plotly(self):
@@ -62,8 +67,9 @@ class ConfusionMatrixVisualizer(Visualizer):
         figs = []
         for _, row in self.df.iterrows():
             # every row needs to be visualized individually since each row corresponds to one confusion matrix
-            conf_mat_np = row['measurement_data']['matrix']
-            labels = row['measurement_data']['labels']
+            measurement_dict = json.loads(row['measurement_data'])
+            conf_mat_np = json.loads(measurement_dict['matrix'].replace(" ", ","))
+            labels = measurement_dict['labels']
             conf_mat_df = pd.DataFrame(conf_mat_np, 
                                        index=pd.Index(labels, name="predicted"),
                                        columns=pd.Index(labels, name="actual")
@@ -115,22 +121,32 @@ class TimebasedMultiLineChartVisualizer(Visualizer):
 
         for _, row in self.df.iterrows():
             measurement_dict = row['measurement_data']
+            measurement_dict = json.loads(measurement_dict)
             timestamps = pd.to_datetime(measurement_dict.pop('timestamps'))
             self.timedelta_lists.append(timestamps - timestamps[0])
-            if len(timestamps) > len(self.x_tick_vals):
-                x_tick_idx = np.floor(np.linspace(0, len(self.timedelta_lists[-1])-1, 5)).astype(int)
+            x_tick_idx = np.floor(np.linspace(0, len(self.timedelta_lists[-1])-1, 5)).astype(int)
+            if len(self.x_tick_vals) == 0 or self.timedelta_lists[-1][x_tick_idx][4] > self.x_tick_vals[4]:
                 self.x_tick_vals = self.timedelta_lists[-1][x_tick_idx]
                 self.x_tick_labels = self.x_tick_vals.map(self._strfdelta)
             self.measurements_lists.append(measurement_dict.pop('measurements'))
             measurement_time = row['measurement_datetime'].strftime("%Y-%m-%d %H:%M:%S")
-            self.linelabels.append("\"" + row['measurement_description'] + "\"\nfrom\n" + measurement_time)
+            self.linelabels.append("\"" + row['measured_method_name'] + "\"\nfrom\n" + measurement_time)
 
 
     def _strfdelta(self, td):
         hours, remainder = divmod(td.total_seconds(), 3600)
         minutes, seconds = divmod(remainder, 60)
         return f"{int(hours)}h {int(minutes)}m {seconds:.2f}s"
-    
+
+    def plot_with_text(self):
+        for i in range(len(self.measurements_lists)):
+            print("Statistics for operation " + str(i+1) + ":\n")
+            print("MAX: " + str(max(self.measurements_lists[i])))
+            print("MIN: " + str(min(self.measurements_lists[i])))
+            print("MEAN: " + str(statistics.mean(self.measurements_lists[i])))
+            print("ST DEV: " + str(statistics.stdev(self.measurements_lists[i])))
+            print("===================================" + "\n")
+
     def plot_with_matplotlib(self):
         plt.rcParams.update({'font.size': 18})
         fig, ax = plt.subplots()
@@ -187,7 +203,7 @@ class EpochbasedMultiLineChartVisualizer(Visualizer):
             measurements = row['measurement_data']
             epoch_ids = np.arange(1, len(measurements) + 1)
             measurement_time = row['measurement_datetime'].strftime("%Y-%m-%d %H:%M:%S")
-            linelabel = "\"" + row['measurement_description'] + "\"\nfrom\n" + measurement_time
+            linelabel = "\"" + row['measured_method_name'] + "\"\nfrom\n" + measurement_time
             
             ax.plot(epoch_ids, measurements, label=linelabel)
         
@@ -225,10 +241,15 @@ class BarVisualizer(Visualizer):
     def __init__(self, df_from_cli, plotting_backend):
         super().__init__(df_from_cli, plotting_backend)
         df_from_cli['measurement_time_str'] = df_from_cli['measurement_datetime'].dt.strftime("%Y-%m-%d %H:%M:%S")
-        df_from_cli['x_labels'] = " \"" + df_from_cli['measurement_description'] + "\"\nfrom\n" + df_from_cli['measurement_time_str']
+        df_from_cli['x_labels'] = " \"" + df_from_cli['measured_method_name'] + "\"\nfrom\n" + df_from_cli['measurement_time_str']
         df_from_cli.sort_values(by='measurement_datetime', inplace=True)
         self.df = df_from_cli
-    
+
+    def plot_with_text(self):
+        print("Time needed for each operation: \n")
+        print(self.df["measurement_data"])
+
+
     def plot_with_matplotlib(self):
         plt.rcParams.update({'font.size': 18})
         fig, ax = plt.subplots()
@@ -268,6 +289,7 @@ class BarVisualizer(Visualizer):
         
         return [fig]
 
+
 class ThroughputVisualizer(BarVisualizer):
     title = "Metric: Throughput"
     xaxis_label = ""
@@ -283,6 +305,11 @@ class PowerVisualizer(TimebasedMultiLineChartVisualizer):
     xaxis_label = "Time elapsed since start of pipeline run"
     yaxis_label = "Watt"
 
+class GPUPowerVisualizer(TimebasedMultiLineChartVisualizer):
+    title = "Metric: GPU Power"
+    xaxis_label = "Time elapsed since start of pipeline run"
+    yaxis_label = "Watt"
+
 class EnergyVisualizer(BarVisualizer):
     title = "Metric: Power"
     xaxis_label = "Time elapsed since start of pipeline run"
@@ -293,7 +320,17 @@ class MemoryVisualizer(TimebasedMultiLineChartVisualizer):
     xaxis_label = "Seconds elapsed since start of pipeline run"
     yaxis_label = "Memory usage in MB"
 
+class GPUMemoryVisualizer(TimebasedMultiLineChartVisualizer):
+    title = "Metric: GPU Memory usage"
+    xaxis_label = "Seconds elapsed since start of pipeline run"
+    yaxis_label = "GPU Memory usage in MB"
+
 class TimeVisualizer(BarVisualizer):
+    title = "Metric: Time"
+    xaxis_label = ""
+    yaxis_label = "Time taken in seconds"
+
+class GPUTimeVisualizer(BarVisualizer):
     title = "Metric: Time"
     xaxis_label = ""
     yaxis_label = "Time taken in seconds"
@@ -313,16 +350,31 @@ class CPUVisualizer(TimebasedMultiLineChartVisualizer):
     xaxis_label = "Time elapsed since start of pipeline run"
     yaxis_label = "CPU usage in %"
 
+class GPUVisualizer(TimebasedMultiLineChartVisualizer):
+    title = "Metric: GPU usage"
+    xaxis_label = "Time elapsed since start of pipeline run"
+    yaxis_label = "GPU usage in %"
+
+class TimedTTAVisualizer(BarVisualizer):
+    title = "Metric: Time to target accuracy"
+    xaxis_label = "Time elapsed since until target accuracy reached"
+    yaxis_label = "Time taken in seconds"
+
 type_to_visualizer_class_mapper = {
     "throughput" : ThroughputVisualizer,
     "latency" : LatencyVisualizer,
     "power" : PowerVisualizer,
+    "gpupower": GPUPowerVisualizer,
     "energy" : EnergyVisualizer,
     "memory" : MemoryVisualizer,
+    "gpumemory" : GPUMemoryVisualizer,
     "time" : TimeVisualizer,
+    "gputime" : GPUTimeVisualizer,
     "loss" : LossVisualizer,
     "tta" : TTAVisualizer,
     "confusion-matrix" : ConfusionMatrixVisualizer,
     "hyperparameters" : HyperparemeterVisualizer,
-    "cpu": CPUVisualizer
+    "cpu": CPUVisualizer,
+    "gpu": GPUVisualizer,
+    "timed tta": TimedTTAVisualizer
     }
